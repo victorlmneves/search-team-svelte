@@ -1,0 +1,120 @@
+html, body {
+	position: relative;
+	width: 100%;
+	height: 100%;
+}
+
+body {
+	color: #333;
+	font-size: 16px;
+	padding: .5em 1.5em;
+	margin: 0;
+	max-height: 100vh;
+	padding: 8px;
+	box-sizing: border-box;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+}
+
+a {
+	color: rgb(0,100,200);
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:visited {
+	color: rgb(0,80,160);
+}
+
+label {
+	display: block;
+}
+
+input, button, select, textarea {
+	font-family: inherit;
+	font-size: inherit;
+	padding: 0.4em;
+	margin: 0 0 0.5em 0;
+	box-sizing: border-box;
+	border: 1px solid #ccc;
+	border-radius: 2px;
+}
+
+input:disabled {
+	color: #ccc;
+}
+
+input[type="range"] {
+	height: 0;
+}
+
+button {
+	color: #333;
+	background-color: #f4f4f4;
+	outline: none;
+}
+
+button:disabled {
+	color: #999;
+}
+
+button:not(:disabled):active {
+	background-color: #ddd;
+}
+
+button:focus {
+	border-color: #666;
+}
+
+@font-face {
+	font-family: "icomoon";
+	src: url('../assets/fonts/icons.eot?lcgmzt');
+	src: url('../assets/fonts/icons.eot?lcgmzt#iefix') format('embedded-opentype'),
+	url('../assets/fonts/icons.ttf?lcgmzt') format('truetype'),
+	url('../assets/fonts/icons.woff?lcgmzt') format('woff'),
+	url('../assets/fonts/icons.svg?lcgmzt#icomoon') format('svg');
+	font-weight: 400;
+	font-style: normal;
+}
+
+[class^="icon-"],
+[class*=" icon-"] {
+	/* use !important to prevent issues with browser extensions that change fonts */
+	font-family: 'icomoon' !important;
+	speak: none;
+	font-style: normal;
+	font-weight: 400;
+	font-variant: normal;
+	text-transform: none;
+	line-height: 1;
+
+	/* Better Font Rendering =========== */
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+.icon-user:before {
+	content: "\e900";
+}
+
+.icon-search:before {
+	content: "\e901";
+}
+
+.icon-location:before {
+	content: "\e902";
+}
+
+.icon-phone:before {
+	content: "\e903";
+}
+
+.app {
+	border: 5px #000 solid;
+	margin: 15px;
+	max-height: calc(100vh - 70px);
+	padding: 10px 30px;
+	overflow-y: auto;
+}
