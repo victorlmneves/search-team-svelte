@@ -29,7 +29,7 @@
   <h1>Great success!</h1>
   <figure class="borat">
     <Navigate to="/about">
-      <img alt="Borat" src="assets/images/great-success.png">
+      <img alt="Borat" src="/build/assets/images/great-success.png">
     </Navigate>
     <figcaption>HIGH FIVE!</figcaption>
   </figure>

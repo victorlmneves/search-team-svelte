@@ -1,5 +1,5 @@
 
-(function(l, r) { if (l.getElementById('livereloadscript')) return; r = l.createElement('script'); r.async = 1; r.src = '//' + (window.location.host || 'localhost').split(':')[0] + ':35729/livereload.js?snipver=1'; r.id = 'livereloadscript'; l.head.appendChild(r) })(window.document);
+(function(l, r) { if (l.getElementById('livereloadscript')) return; r = l.createElement('script'); r.async = 1; r.src = '//' + (window.location.host || 'localhost').split(':')[0] + ':35729/livereload.js?snipver=1'; r.id = 'livereloadscript'; l.getElementsByTagName('head')[0].appendChild(r) })(window.document);
 var app = (function () {
     'use strict';
 
@@ -31,13 +31,19 @@ var app = (function () {
     function safe_not_equal(a, b) {
         return a != a ? b == b : a !== b || ((a && typeof a === 'object') || typeof a === 'function');
     }
+    function is_empty(obj) {
+        return Object.keys(obj).length === 0;
+    }
     function validate_store(store, name) {
-        if (!store || typeof store.subscribe !== 'function') {
+        if (store != null && typeof store.subscribe !== 'function') {
             throw new Error(`'${name}' is not a store with a 'subscribe' method`);
         }
     }
-    function subscribe(store, callback) {
-        const unsub = store.subscribe(callback);
+    function subscribe(store, ...callbacks) {
+        if (store == null) {
+            return noop;
+        }
+        const unsub = store.subscribe(...callbacks);
         return unsub.unsubscribe ? () => unsub.unsubscribe() : unsub;
     }
     function get_store_value(store) {
@@ -62,7 +68,10 @@ var app = (function () {
     function get_slot_changes(definition, $$scope, dirty, fn) {
         if (definition[2] && fn) {
             const lets = definition[2](fn(dirty));
-            if (typeof $$scope.dirty === 'object') {
+            if ($$scope.dirty === undefined) {
+                return lets;
+            }
+            if (typeof lets === 'object') {
                 const merged = [];
                 const len = Math.max($$scope.dirty.length, lets.length);
                 for (let i = 0; i < len; i += 1) {
@@ -73,6 +82,13 @@ var app = (function () {
             return $$scope.dirty | lets;
         }
         return $$scope.dirty;
+    }
+    function update_slot(slot, slot_definition, ctx, $$scope, dirty, get_slot_changes_fn, get_slot_context_fn) {
+        const slot_changes = get_slot_changes(slot_definition, $$scope, dirty, get_slot_changes_fn);
+        if (slot_changes) {
+            const slot_context = get_slot_context(slot_definition, ctx, $$scope, get_slot_context_fn);
+            slot.p(slot_context, slot_changes);
+        }
     }
 
     const is_client = typeof window !== 'undefined';
@@ -159,9 +175,8 @@ var app = (function () {
         return e;
     }
 
-    let stylesheet;
+    const active_docs = new Set();
     let active = 0;
-    let current_rules = {};
     // https://github.com/darkskyapp/string-hash/blob/master/index.js
     function hash(str) {
         let hash = 5381;
@@ -179,12 +194,11 @@ var app = (function () {
         }
         const rule = keyframes + `100% {${fn(b, 1 - b)}}\n}`;
         const name = `__svelte_${hash(rule)}_${uid}`;
+        const doc = node.ownerDocument;
+        active_docs.add(doc);
+        const stylesheet = doc.__svelte_stylesheet || (doc.__svelte_stylesheet = doc.head.appendChild(element('style')).sheet);
+        const current_rules = doc.__svelte_rules || (doc.__svelte_rules = {});
         if (!current_rules[name]) {
-            if (!stylesheet) {
-                const style = element('style');
-                document.head.appendChild(style);
-                stylesheet = style.sheet;
-            }
             current_rules[name] = true;
             stylesheet.insertRule(`@keyframes ${name} ${rule}`, stylesheet.cssRules.length);
         }
@@ -194,24 +208,31 @@ var app = (function () {
         return name;
     }
     function delete_rule(node, name) {
-        node.style.animation = (node.style.animation || '')
-            .split(', ')
-            .filter(name
+        const previous = (node.style.animation || '').split(', ');
+        const next = previous.filter(name
             ? anim => anim.indexOf(name) < 0 // remove specific animation
             : anim => anim.indexOf('__svelte') === -1 // remove all Svelte animations
-        )
-            .join(', ');
-        if (name && !--active)
-            clear_rules();
+        );
+        const deleted = previous.length - next.length;
+        if (deleted) {
+            node.style.animation = next.join(', ');
+            active -= deleted;
+            if (!active)
+                clear_rules();
+        }
     }
     function clear_rules() {
         raf(() => {
             if (active)
                 return;
-            let i = stylesheet.cssRules.length;
-            while (i--)
-                stylesheet.deleteRule(i);
-            current_rules = {};
+            active_docs.forEach(doc => {
+                const stylesheet = doc.__svelte_stylesheet;
+                let i = stylesheet.cssRules.length;
+                while (i--)
+                    stylesheet.deleteRule(i);
+                doc.__svelte_rules = {};
+            });
+            active_docs.clear();
         });
     }
 
@@ -257,16 +278,21 @@ var app = (function () {
     function add_render_callback(fn) {
         render_callbacks.push(fn);
     }
+    let flushing = false;
+    const seen_callbacks = new Set();
     function flush() {
-        const seen_callbacks = new Set();
+        if (flushing)
+            return;
+        flushing = true;
         do {
             // first, call beforeUpdate functions
             // and update components
-            while (dirty_components.length) {
-                const component = dirty_components.shift();
+            for (let i = 0; i < dirty_components.length; i += 1) {
+                const component = dirty_components[i];
                 set_current_component(component);
                 update(component.$$);
             }
+            dirty_components.length = 0;
             while (binding_callbacks.length)
                 binding_callbacks.pop()();
             // then, once components are updated, call
@@ -275,9 +301,9 @@ var app = (function () {
             for (let i = 0; i < render_callbacks.length; i += 1) {
                 const callback = render_callbacks[i];
                 if (!seen_callbacks.has(callback)) {
-                    callback();
                     // ...so guard against infinite loops
                     seen_callbacks.add(callback);
+                    callback();
                 }
             }
             render_callbacks.length = 0;
@@ -286,6 +312,8 @@ var app = (function () {
             flush_callbacks.pop()();
         }
         update_scheduled = false;
+        flushing = false;
+        seen_callbacks.clear();
     }
     function update($$) {
         if ($$.fragment !== null) {
@@ -527,14 +555,15 @@ var app = (function () {
             context: new Map(parent_component ? parent_component.$$.context : []),
             // everything else
             callbacks: blank_object(),
-            dirty
+            dirty,
+            skip_bound: false
         };
         let ready = false;
         $$.ctx = instance
             ? instance(component, prop_values, (i, ret, ...rest) => {
                 const value = rest.length ? rest[0] : ret;
                 if ($$.ctx && not_equal($$.ctx[i], $$.ctx[i] = value)) {
-                    if ($$.bound[i])
+                    if (!$$.skip_bound && $$.bound[i])
                         $$.bound[i](value);
                     if (ready)
                         make_dirty(component, i);
@@ -549,8 +578,10 @@ var app = (function () {
         $$.fragment = create_fragment ? create_fragment($$.ctx) : false;
         if (options.target) {
             if (options.hydrate) {
+                const nodes = children(options.target);
                 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                $$.fragment && $$.fragment.l(children(options.target));
+                $$.fragment && $$.fragment.l(nodes);
+                nodes.forEach(detach);
             }
             else {
                 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -577,13 +608,17 @@ var app = (function () {
                     callbacks.splice(index, 1);
             };
         }
-        $set() {
-            // overridden by instance, if it has props
+        $set($$props) {
+            if (this.$$set && !is_empty($$props)) {
+                this.$$.skip_bound = true;
+                this.$$set($$props);
+                this.$$.skip_bound = false;
+            }
         }
     }
 
     function dispatch_dev(type, detail) {
-        document.dispatchEvent(custom_event(type, Object.assign({ version: '3.17.1' }, detail)));
+        document.dispatchEvent(custom_event(type, Object.assign({ version: '3.24.1' }, detail)));
     }
     function append_dev(target, node) {
         dispatch_dev("SvelteDOMInsert", { target, node });
@@ -619,10 +654,26 @@ var app = (function () {
     }
     function set_data_dev(text, data) {
         data = '' + data;
-        if (text.data === data)
+        if (text.wholeText === data)
             return;
         dispatch_dev("SvelteDOMSetData", { node: text, data });
         text.data = data;
+    }
+    function validate_each_argument(arg) {
+        if (typeof arg !== 'string' && !(arg && typeof arg === 'object' && 'length' in arg)) {
+            let msg = '{#each} only iterates over array-like objects.';
+            if (typeof Symbol === 'function' && arg && Symbol.iterator in arg) {
+                msg += ' You can use a spread to convert this iterable into an array.';
+            }
+            throw new Error(msg);
+        }
+    }
+    function validate_slots(name, slot, keys) {
+        for (const slot_key of Object.keys(slot)) {
+            if (!~keys.indexOf(slot_key)) {
+                console.warn(`<${name}> received an unexpected slot "${slot_key}".`);
+            }
+        }
     }
     class SvelteComponentDev extends SvelteComponent {
         constructor(options) {
@@ -637,7 +688,146 @@ var app = (function () {
                 console.warn(`Component was already destroyed`); // eslint-disable-line no-console
             };
         }
+        $capture_state() { }
+        $inject_state() { }
     }
+
+    const subscriber_queue = [];
+    /**
+     * Creates a `Readable` store that allows reading by subscription.
+     * @param value initial value
+     * @param {StartStopNotifier}start start and stop notifications for subscriptions
+     */
+    function readable(value, start) {
+        return {
+            subscribe: writable(value, start).subscribe,
+        };
+    }
+    /**
+     * Create a `Writable` store that allows both updating and reading by subscription.
+     * @param {*=}value initial value
+     * @param {StartStopNotifier=}start start and stop notifications for subscriptions
+     */
+    function writable(value, start = noop) {
+        let stop;
+        const subscribers = [];
+        function set(new_value) {
+            if (safe_not_equal(value, new_value)) {
+                value = new_value;
+                if (stop) { // store is ready
+                    const run_queue = !subscriber_queue.length;
+                    for (let i = 0; i < subscribers.length; i += 1) {
+                        const s = subscribers[i];
+                        s[1]();
+                        subscriber_queue.push(s, value);
+                    }
+                    if (run_queue) {
+                        for (let i = 0; i < subscriber_queue.length; i += 2) {
+                            subscriber_queue[i][0](subscriber_queue[i + 1]);
+                        }
+                        subscriber_queue.length = 0;
+                    }
+                }
+            }
+        }
+        function update(fn) {
+            set(fn(value));
+        }
+        function subscribe(run, invalidate = noop) {
+            const subscriber = [run, invalidate];
+            subscribers.push(subscriber);
+            if (subscribers.length === 1) {
+                stop = start(set) || noop;
+            }
+            run(value);
+            return () => {
+                const index = subscribers.indexOf(subscriber);
+                if (index !== -1) {
+                    subscribers.splice(index, 1);
+                }
+                if (subscribers.length === 0) {
+                    stop();
+                    stop = null;
+                }
+            };
+        }
+        return { set, update, subscribe };
+    }
+    function derived(stores, fn, initial_value) {
+        const single = !Array.isArray(stores);
+        const stores_array = single
+            ? [stores]
+            : stores;
+        const auto = fn.length < 2;
+        return readable(initial_value, (set) => {
+            let inited = false;
+            const values = [];
+            let pending = 0;
+            let cleanup = noop;
+            const sync = () => {
+                if (pending) {
+                    return;
+                }
+                cleanup();
+                const result = fn(single ? values[0] : values, set);
+                if (auto) {
+                    set(result);
+                }
+                else {
+                    cleanup = is_function(result) ? result : noop;
+                }
+            };
+            const unsubscribers = stores_array.map((store, i) => subscribe(store, (value) => {
+                values[i] = value;
+                pending &= ~(1 << i);
+                if (inited) {
+                    sync();
+                }
+            }, () => {
+                pending |= (1 << i);
+            }));
+            inited = true;
+            sync();
+            return function stop() {
+                run_all(unsubscribers);
+                cleanup();
+            };
+        });
+    }
+
+    var store = /*#__PURE__*/Object.freeze({
+        __proto__: null,
+        derived: derived,
+        readable: readable,
+        writable: writable,
+        get: get_store_value
+    });
+
+    function getCjsExportFromNamespace (n) {
+    	return n && n['default'] || n;
+    }
+
+    var require$$0 = getCjsExportFromNamespace(store);
+
+    const writable$1 = require$$0.writable;
+
+    const router = writable$1({});
+
+    function set(route) {
+      router.set(route);
+    }
+
+    function remove() {
+      router.set({});
+    }
+
+    const activeRoute = {
+      subscribe: router.subscribe,
+      set,
+      remove
+    };
+
+    var store$1 = { activeRoute };
 
     const UrlParser = (urlString, namedUrl = "") => {
       const urlBase = new URL(urlString);
@@ -834,144 +1024,6 @@ var app = (function () {
       UrlParser: UrlParser$1
     };
 
-    const subscriber_queue = [];
-    /**
-     * Creates a `Readable` store that allows reading by subscription.
-     * @param value initial value
-     * @param {StartStopNotifier}start start and stop notifications for subscriptions
-     */
-    function readable(value, start) {
-        return {
-            subscribe: writable(value, start).subscribe,
-        };
-    }
-    /**
-     * Create a `Writable` store that allows both updating and reading by subscription.
-     * @param {*=}value initial value
-     * @param {StartStopNotifier=}start start and stop notifications for subscriptions
-     */
-    function writable(value, start = noop) {
-        let stop;
-        const subscribers = [];
-        function set(new_value) {
-            if (safe_not_equal(value, new_value)) {
-                value = new_value;
-                if (stop) { // store is ready
-                    const run_queue = !subscriber_queue.length;
-                    for (let i = 0; i < subscribers.length; i += 1) {
-                        const s = subscribers[i];
-                        s[1]();
-                        subscriber_queue.push(s, value);
-                    }
-                    if (run_queue) {
-                        for (let i = 0; i < subscriber_queue.length; i += 2) {
-                            subscriber_queue[i][0](subscriber_queue[i + 1]);
-                        }
-                        subscriber_queue.length = 0;
-                    }
-                }
-            }
-        }
-        function update(fn) {
-            set(fn(value));
-        }
-        function subscribe(run, invalidate = noop) {
-            const subscriber = [run, invalidate];
-            subscribers.push(subscriber);
-            if (subscribers.length === 1) {
-                stop = start(set) || noop;
-            }
-            run(value);
-            return () => {
-                const index = subscribers.indexOf(subscriber);
-                if (index !== -1) {
-                    subscribers.splice(index, 1);
-                }
-                if (subscribers.length === 0) {
-                    stop();
-                    stop = null;
-                }
-            };
-        }
-        return { set, update, subscribe };
-    }
-    function derived(stores, fn, initial_value) {
-        const single = !Array.isArray(stores);
-        const stores_array = single
-            ? [stores]
-            : stores;
-        const auto = fn.length < 2;
-        return readable(initial_value, (set) => {
-            let inited = false;
-            const values = [];
-            let pending = 0;
-            let cleanup = noop;
-            const sync = () => {
-                if (pending) {
-                    return;
-                }
-                cleanup();
-                const result = fn(single ? values[0] : values, set);
-                if (auto) {
-                    set(result);
-                }
-                else {
-                    cleanup = is_function(result) ? result : noop;
-                }
-            };
-            const unsubscribers = stores_array.map((store, i) => store.subscribe((value) => {
-                values[i] = value;
-                pending &= ~(1 << i);
-                if (inited) {
-                    sync();
-                }
-            }, () => {
-                pending |= (1 << i);
-            }));
-            inited = true;
-            sync();
-            return function stop() {
-                run_all(unsubscribers);
-                cleanup();
-            };
-        });
-    }
-
-    var store = /*#__PURE__*/Object.freeze({
-        __proto__: null,
-        derived: derived,
-        readable: readable,
-        writable: writable,
-        get: get_store_value
-    });
-
-    function getCjsExportFromNamespace (n) {
-    	return n && n['default'] || n;
-    }
-
-    var require$$0 = getCjsExportFromNamespace(store);
-
-    const writable$1 = require$$0.writable;
-
-    const router = writable$1({});
-
-    function set(route) {
-      router.set(route);
-    }
-
-    function remove() {
-      router.set({});
-    }
-
-    const activeRoute = {
-      subscribe: router.subscribe,
-      set,
-      remove
-    };
-
-    var store$1 = { activeRoute };
-    var store_1 = store$1.activeRoute;
-
     /**
      * Returns true if object has any nested routes empty
      * @param routeObject
@@ -1040,13 +1092,13 @@ var app = (function () {
      * @param pathname
      **/
     function getNamedParams(pathName = '') {
-      if (pathName.trim().length === '') return []
-
+      if (pathName.trim().length === 0) return []
       const namedUrlParams = getPathNames(pathName);
-      return namedUrlParams.reduce((validParams, param, _index) => {
+      return namedUrlParams.reduce((validParams, param) => {
         if (param[0] === ':') {
           validParams.push(param.slice(1));
         }
+
         return validParams
       }, [])
     }
@@ -1079,6 +1131,15 @@ var app = (function () {
     }
 
     /**
+     * Return the path name excluding query params
+     * @param name
+     **/
+    function pathWithoutQueryParams(currentRoute) {
+      const path = currentRoute.path.split('?');
+      return path[0]
+    }
+
+    /**
      * Return the path name including query params
      * @param name
      **/
@@ -1089,11 +1150,30 @@ var app = (function () {
           queryParams.push(`${key}=${value}`);
         }
       }
+
       if (queryParams.length > 0) {
         return `${currentRoute.path}?${queryParams.join('&')}`
       } else {
         return currentRoute.path
       }
+    }
+
+    /**
+     * Returns a string with trailing or leading slash character removed
+     * @param pathName string
+     * @param position string - lead, trail, both
+     **/
+    function removeExtraPaths(pathNames, basePathNames) {
+      const names = basePathNames.split('/');
+      if (names.length > 1) {
+        names.forEach(function (name, index) {
+          if (name.length > 0 && index > 0) {
+            pathNames.shift();
+          }
+        });
+      }
+
+      return pathNames
     }
 
     /**
@@ -1134,6 +1214,15 @@ var app = (function () {
       } else {
         return route.lang[language]
       }
+    }
+
+    /**
+     * Return the path name excluding query params
+     * @param name
+     **/
+    function startsWithNamedParam(currentRoute) {
+      const routeName = removeSlash(currentRoute);
+      return routeName.startsWith(':')
     }
 
     /**
@@ -1200,87 +1289,65 @@ var app = (function () {
       getPathNames,
       nameToPath,
       pathWithQueryParams,
+      pathWithoutQueryParams,
+      removeExtraPaths,
       removeSlash,
       routeNameLocalised,
-      updateRoutePath
+      startsWithNamedParam,
+      updateRoutePath,
     };
 
     const { UrlParser: UrlParser$2 } = urlParamsParser;
-    const { activeRoute: activeRoute$1 } = store$1;
-    const {
-      anyEmptyNestedRoutes: anyEmptyNestedRoutes$1,
-      updateRoutePath: updateRoutePath$1,
-      getNamedParams: getNamedParams$1,
-      nameToPath: nameToPath$1,
-      pathWithQueryParams: pathWithQueryParams$1,
-      removeSlash: removeSlash$1,
-      routeNameLocalised: routeNameLocalised$1
-    } = utils;
 
-    const NotFoundPage = '/404.html';
-    let userDefinedRoutes = [];
-    let routerOptions = {};
-    let currentActiveRoute = '';
+    const { pathWithQueryParams: pathWithQueryParams$1, removeSlash: removeSlash$1 } = utils;
 
-    /**
-     * Object exposes one single property: activeRoute
-     * @param routes  Array of routes
-     * @param currentUrl current url
-     * @param options configuration options
-     **/
-    function SpaRouter(routes, currentUrl, options = {}) {
-      let redirectTo = '';
-      routerOptions = { ...options };
-      if (typeof currentUrl === 'undefined' || currentUrl === '') {
-        currentUrl = document.location.href;
+    function RouterCurrent(trackPage) {
+      const trackPageview = trackPage || false;
+      let activeRoute = '';
+
+      function setActive(newRoute) {
+        activeRoute = newRoute.path;
+        pushActiveRoute(newRoute);
       }
 
-      currentUrl = removeSlash$1(currentUrl, 'trail');
-      userDefinedRoutes = routes;
-
-      const urlParser = UrlParser$2(currentUrl);
-      let routeNamedParams = {};
-
-      function findActiveRoute() {
-        let convert = false;
-        redirectTo = '';
-
-        if (routerOptions.langConvertTo) {
-          routerOptions.lang = routerOptions.langConvertTo;
-          convert = true;
-        }
-
-        let searchActiveRoute = searchActiveRoutes(routes, '', urlParser.pathNames, routerOptions.lang, convert);
-
-        if (!searchActiveRoute || anyEmptyNestedRoutes$1(searchActiveRoute)) {
-          if (typeof window !== 'undefined') {
-            forceRedirect(NotFoundPage);
-          } else {
-            searchActiveRoute = { name: '404', component: '', path: '404' };
-          }
-        } else {
-          searchActiveRoute.path = pathWithQueryParams$1(searchActiveRoute);
-        }
-
-        return searchActiveRoute
+      function active() {
+        return activeRoute
       }
 
       /**
-       * Redirect current route to another
-       * @param destinationUrl
+       * Returns true if pathName is current active route
+       * @param pathName String The path name to check against the current route.
+       * @param includePath Boolean if true checks that pathName is included in current route. If false should match it.
        **/
-      function forceRedirect(destinationUrl) {
-        currentActiveRoute = destinationUrl;
-
-        if (typeof window !== 'undefined') {
-          if (destinationUrl === NotFoundPage) {
-            window.location = destinationUrl;
-          } else {
-            navigateTo(destinationUrl);
-          }
+      function isActive(queryPath, includePath = false) {
+        if (queryPath[0] !== '/') {
+          queryPath = '/' + queryPath;
         }
 
-        return destinationUrl
+        // remove query params for comparison
+        let pathName = UrlParser$2(`http://fake.com${queryPath}`).pathname;
+        let activeRoutePath = UrlParser$2(`http://fake.com${activeRoute}`).pathname;
+
+        pathName = removeSlash$1(pathName, 'trail');
+
+        activeRoutePath = removeSlash$1(activeRoutePath, 'trail');
+
+        if (includePath) {
+          return activeRoutePath.includes(pathName)
+        } else {
+          return activeRoutePath === pathName
+        }
+      }
+
+      function pushActiveRoute(newRoute) {
+        if (typeof window !== 'undefined') {
+          const pathAndSearch = pathWithQueryParams$1(newRoute);
+          //if (window.history && window.history.state && window.history.state.page !== pathAndSearch) {
+          window.history.pushState({ page: pathAndSearch }, '', pathAndSearch);
+          if (trackPageview) {
+            gaTracking(pathAndSearch);
+          }
+        }
       }
 
       function gaTracking(newPage) {
@@ -1290,33 +1357,191 @@ var app = (function () {
         }
       }
 
-      function setActiveRoute() {
-        const currentRoute = findActiveRoute();
+      return Object.freeze({ active, isActive, setActive })
+    }
 
-        if (currentRoute.redirectTo) {
-          return forceRedirect(redirectTo)
-        }
+    var current = { RouterCurrent };
 
-        currentActiveRoute = currentRoute.path;
-        activeRoute$1.set(currentRoute);
+    function RouterGuard(onlyIf) {
+      const guardInfo = onlyIf;
 
-        pushActiveRoute(currentRoute);
-
-        return currentRoute
+      function valid() {
+        return guardInfo && guardInfo.guard && typeof guardInfo.guard === 'function'
       }
 
-      /**
-       * Updates the browser pathname and history with the active route.
-       * @param currentRoute
-       **/
-      function pushActiveRoute(currentRoute) {
-        if (typeof window !== 'undefined') {
-          const pathAndSearch = pathWithQueryParams$1(currentRoute);
-          window.history.pushState({ page: pathAndSearch }, '', pathAndSearch);
-          if (routerOptions.gaPageviews) {
-            gaTracking(pathAndSearch);
-          }
+      function redirect() {
+        return !guardInfo.guard()
+      }
+
+      function redirectPath() {
+        let destinationUrl = '/';
+        if (guardInfo.redirect && guardInfo.redirect.length > 0) {
+          destinationUrl = guardInfo.redirect;
         }
+
+        return destinationUrl
+      }
+
+      return Object.freeze({ valid, redirect, redirectPath })
+    }
+
+    var guard = { RouterGuard };
+
+    const { RouterGuard: RouterGuard$1 } = guard;
+
+    function RouterRedirect(route, currentPath) {
+      const guard = RouterGuard$1(route.onlyIf);
+
+      function path() {
+        let redirectTo = currentPath;
+        if (route.redirectTo && route.redirectTo.length > 0) {
+          redirectTo = route.redirectTo;
+        }
+
+        if (guard.valid() && guard.redirect()) {
+          redirectTo = guard.redirectPath();
+        }
+
+        return redirectTo
+      }
+
+      return Object.freeze({ path })
+    }
+
+    var redirect = { RouterRedirect };
+
+    const { UrlParser: UrlParser$3 } = urlParamsParser;
+
+    function RouterRoute({ routeInfo, path, routeNamedParams, urlParser, namedPath, language }) {
+      function namedParams() {
+        const parsedParams = UrlParser$3(`https://fake.com${urlParser.pathname}`, namedPath).namedParams;
+
+        return { ...routeNamedParams, ...parsedParams }
+      }
+
+      function get() {
+        return {
+          name: path,
+          component: routeInfo.component,
+          layout: routeInfo.layout,
+          queryParams: urlParser.queryParams,
+          namedParams: namedParams(),
+          path,
+          language
+        }
+      }
+
+      return Object.freeze({ get, namedParams })
+    }
+
+    var route = { RouterRoute };
+
+    const { updateRoutePath: updateRoutePath$1, getNamedParams: getNamedParams$1, nameToPath: nameToPath$1, removeExtraPaths: removeExtraPaths$1, routeNameLocalised: routeNameLocalised$1 } = utils;
+
+    function RouterPath({ basePath, basePathName, pathNames, convert, currentLanguage }) {
+      let updatedPathRoute;
+      let route;
+      let routePathLanguage = currentLanguage;
+
+      function updatedPath(currentRoute) {
+        route = currentRoute;
+        updatedPathRoute = updateRoutePath$1(basePathName, pathNames, route, routePathLanguage, convert);
+        routePathLanguage = convert ? currentLanguage : updatedPathRoute.language;
+
+        return updatedPathRoute
+      }
+
+      function localisedPathName() {
+        return routeNameLocalised$1(route, routePathLanguage)
+      }
+
+      function localisedRouteWithoutNamedParams() {
+        return nameToPath$1(localisedPathName())
+      }
+
+      function basePathNameWithoutNamedParams() {
+        return nameToPath$1(updatedPathRoute.result)
+      }
+
+      function namedPath() {
+        const localisedPath = localisedPathName();
+
+        return basePath ? `${basePath}/${localisedPath}` : localisedPath
+      }
+
+      function routePath() {
+        let routePathValue = `${basePath}/${basePathNameWithoutNamedParams()}`;
+        if (routePathValue === '//') {
+          routePathValue = '/';
+        }
+
+        if (routePathLanguage) {
+          pathNames = removeExtraPaths$1(pathNames, localisedRouteWithoutNamedParams());
+        }
+
+        const namedParams = getNamedParams$1(localisedPathName());
+        if (namedParams && namedParams.length > 0) {
+          namedParams.forEach(function () {
+            if (pathNames.length > 0) {
+              routePathValue += `/${pathNames.shift()}`;
+            }
+          });
+        }
+
+        return routePathValue
+      }
+
+      function routeLanguage() {
+        return routePathLanguage
+      }
+
+      function basePathSameAsLocalised() {
+        return basePathNameWithoutNamedParams() === localisedRouteWithoutNamedParams()
+      }
+
+      return Object.freeze({
+        basePathSameAsLocalised,
+        updatedPath,
+        basePathNameWithoutNamedParams,
+        localisedPathName,
+        localisedRouteWithoutNamedParams,
+        namedPath,
+        pathNames,
+        routeLanguage,
+        routePath,
+      })
+    }
+
+    var path = { RouterPath };
+
+    const { UrlParser: UrlParser$4 } = urlParamsParser;
+
+    const { RouterRedirect: RouterRedirect$1 } = redirect;
+    const { RouterRoute: RouterRoute$1 } = route;
+    const { RouterPath: RouterPath$1 } = path;
+    const { anyEmptyNestedRoutes: anyEmptyNestedRoutes$1, pathWithoutQueryParams: pathWithoutQueryParams$1, startsWithNamedParam: startsWithNamedParam$1 } = utils;
+
+    const NotFoundPage = '/404.html';
+
+    function RouterFinder({ routes, currentUrl, routerOptions, convert }) {
+      const defaultLanguage = routerOptions.defaultLanguage;
+      const urlParser = UrlParser$4(currentUrl);
+      let redirectTo = '';
+      let routeNamedParams = {};
+      let staticParamMatch = false;
+
+      function findActiveRoute() {
+        let searchActiveRoute = searchActiveRoutes(routes, '', urlParser.pathNames, routerOptions.lang, convert);
+
+        if (!searchActiveRoute || !Object.keys(searchActiveRoute).length || anyEmptyNestedRoutes$1(searchActiveRoute)) {
+          if (typeof window !== 'undefined') {
+            searchActiveRoute = routeNotFound(routerOptions.lang);
+          }
+        } else {
+          searchActiveRoute.path = pathWithoutQueryParams$1(searchActiveRoute);
+        }
+
+        return searchActiveRoute
       }
 
       /**
@@ -1325,75 +1550,46 @@ var app = (function () {
        * @param basePath
        * @param pathNames
        **/
-
       function searchActiveRoutes(routes, basePath, pathNames, currentLanguage, convert) {
         let currentRoute = {};
-        let routeLanguage = currentLanguage;
         let basePathName = pathNames.shift().toLowerCase();
+        const routerPath = RouterPath$1({ basePath, basePathName, pathNames, convert, currentLanguage });
+        staticParamMatch = false;
 
-        routes.forEach(function(route) {
-          const updatedPath = updateRoutePath$1(basePathName, pathNames, route, routeLanguage, convert);
+        routes.forEach(function (route) {
+          routerPath.updatedPath(route);
+          if (matchRoute(routerPath, route.name)) {
+            let routePath = routerPath.routePath();
+            redirectTo = RouterRedirect$1(route, redirectTo).path();
 
-          basePathName = updatedPath.result;
-          if (convert) {
-            routeLanguage = currentLanguage;
-          } else {
-            routeLanguage = updatedPath.language;
-          }
-
-          const localisedPathName = routeNameLocalised$1(route, routeLanguage);
-          const localisedRouteName = nameToPath$1(localisedPathName);
-
-          if (basePathName === localisedRouteName) {
-            let namedPath = `${basePath}/${localisedPathName}`;
-            let routePath = `${basePath}/${localisedRouteName}`;
-            if (routePath === '//') {
-              routePath = '/';
-            }
-
-            if (route.redirectTo && route.redirectTo.length > 0) {
-              redirectTo = route.redirectTo;
-            }
-
-            if (route.onlyIf && route.onlyIf.guard) {
-              if (!route.onlyIf.guard()) {
-                let destinationUrl = '/';
-                if (route.onlyIf.redirect && route.onlyIf.redirect.length > 0) {
-                  destinationUrl = route.onlyIf.redirect;
-                }
-                redirectTo = destinationUrl;
-              }
-            }
-
-            const namedParams = getNamedParams$1(localisedPathName);
-            if (namedParams && namedParams.length > 0) {
-              namedParams.forEach(function() {
-                if (pathNames.length > 0) {
-                  routePath += `/${pathNames.shift()}`;
-                }
+            if (currentRoute.name !== routePath) {
+              currentRoute = setCurrentRoute({
+                route,
+                routePath,
+                routeLanguage: routerPath.routeLanguage(),
+                urlParser,
+                namedPath: routerPath.namedPath(),
               });
             }
 
-            if (currentRoute.name !== routePath) {
-              const parsedParams = UrlParser$2(`https://fake.com${urlParser.pathname}`, namedPath).namedParams;
-              routeNamedParams = { ...routeNamedParams, ...parsedParams };
-              currentRoute = {
-                name: routePath,
-                component: route.component,
-                layout: route.layout,
-                queryParams: urlParser.queryParams,
-                namedParams: routeNamedParams,
-                path: routePath,
-                language: routeLanguage
-              };
-            }
-
-            if (route.nestedRoutes && route.nestedRoutes.length > 0 && pathNames.length > 0) {
-              currentRoute.childRoute = searchActiveRoutes(route.nestedRoutes, routePath, pathNames, routeLanguage, convert);
+            if (route.nestedRoutes && route.nestedRoutes.length > 0 && routerPath.pathNames.length > 0) {
+              currentRoute.childRoute = searchActiveRoutes(
+                route.nestedRoutes,
+                routePath,
+                routerPath.pathNames,
+                routerPath.routeLanguage(),
+                convert
+              );
               currentRoute.path = currentRoute.childRoute.path;
               currentRoute.language = currentRoute.childRoute.language;
-            } else if (route.nestedRoutes && route.nestedRoutes.length > 0 && pathNames.length === 0) {
-              const indexRoute = searchActiveRoutes(route.nestedRoutes, routePath, ['index'], routeLanguage, convert);
+            } else if (nestedRoutesAndNoPath(route, routerPath.pathNames)) {
+              const indexRoute = searchActiveRoutes(
+                route.nestedRoutes,
+                routePath,
+                ['index'],
+                routerPath.routeLanguage(),
+                convert
+              );
               if (indexRoute && Object.keys(indexRoute).length > 0) {
                 currentRoute.childRoute = indexRoute;
                 currentRoute.language = currentRoute.childRoute.language;
@@ -1409,93 +1605,193 @@ var app = (function () {
         return currentRoute
       }
 
+      function matchRoute(routerPath, routeName) {
+        const basePathSameAsLocalised = routerPath.basePathSameAsLocalised();
+        if (basePathSameAsLocalised) {
+          staticParamMatch = true;
+        }
+
+        return basePathSameAsLocalised || (!staticParamMatch && startsWithNamedParam$1(routeName))
+      }
+
+      function nestedRoutesAndNoPath(route, pathNames) {
+        return route.nestedRoutes && route.nestedRoutes.length > 0 && pathNames.length === 0
+      }
+
+      function setCurrentRoute({ route, routePath, routeLanguage, urlParser, namedPath }) {
+        const routerRoute = RouterRoute$1({
+          routeInfo: route,
+          urlParser,
+          path: routePath,
+          routeNamedParams,
+          namedPath,
+          language: routeLanguage || defaultLanguage,
+        });
+        routeNamedParams = routerRoute.namedParams();
+
+        return routerRoute.get()
+      }
+
+      function routeNotFound(customLanguage) {
+        const custom404Page = routes.find((route) => route.name == '404');
+        const language = customLanguage || defaultLanguage || '';
+        if (custom404Page) {
+          return { ...custom404Page, language, path: '404' }
+        } else {
+          return { name: '404', component: '', path: '404', redirectTo: NotFoundPage }
+        }
+      }
+
+      return Object.freeze({ findActiveRoute })
+    }
+
+    var finder = { RouterFinder };
+
+    const { activeRoute: activeRoute$1 } = store$1;
+    const { RouterCurrent: RouterCurrent$1 } = current;
+    const { RouterFinder: RouterFinder$1 } = finder;
+    const { removeSlash: removeSlash$2 } = utils;
+
+    const NotFoundPage$1 = '/404.html';
+
+    let userDefinedRoutes = [];
+    let routerOptions = {};
+    let routerCurrent;
+
+    /**
+     * Object exposes one single property: activeRoute
+     * @param routes  Array of routes
+     * @param currentUrl current url
+     * @param options configuration options
+     **/
+    function SpaRouter(routes, currentUrl, options = {}) {
+      routerOptions = { ...options };
+      if (typeof currentUrl === 'undefined' || currentUrl === '') {
+        currentUrl = document.location.href;
+      }
+
+      routerCurrent = RouterCurrent$1(routerOptions.gaPageviews);
+
+      currentUrl = removeSlash$2(currentUrl, 'trail');
+      userDefinedRoutes = routes;
+
+      function findActiveRoute() {
+        let convert = false;
+
+        if (routerOptions.langConvertTo) {
+          routerOptions.lang = routerOptions.langConvertTo;
+          convert = true;
+        }
+
+        return RouterFinder$1({ routes, currentUrl, routerOptions, convert }).findActiveRoute()
+      }
+
+      /**
+       * Redirect current route to another
+       * @param destinationUrl
+       **/
+      function navigateNow(destinationUrl) {
+        if (typeof window !== 'undefined') {
+          if (destinationUrl === NotFoundPage$1) {
+            routerCurrent.setActive({ path: NotFoundPage$1 });
+          } else {
+            navigateTo(destinationUrl);
+          }
+        }
+
+        return destinationUrl
+      }
+
+      function setActiveRoute() {
+        const currentRoute = findActiveRoute();
+        if (currentRoute.redirectTo) {
+          return navigateNow(currentRoute.redirectTo)
+        }
+
+        routerCurrent.setActive(currentRoute);
+        activeRoute$1.set(currentRoute);
+
+        return currentRoute
+      }
+
       return Object.freeze({
         setActiveRoute,
-        findActiveRoute
+        findActiveRoute,
       })
     }
 
     /**
-     * Updates the current active route and updates the browser pathname
+     * Converts a route to its localised version
      * @param pathName
      **/
     function localisedRoute(pathName, language) {
-      pathName = removeSlash$1(pathName, 'lead');
+      pathName = removeSlash$2(pathName, 'lead');
       routerOptions.langConvertTo = language;
 
-      const activeRoute = SpaRouter(userDefinedRoutes, 'http://fake.com/' + pathName, routerOptions).findActiveRoute();
-
-      return activeRoute
+      return SpaRouter(userDefinedRoutes, 'http://fake.com/' + pathName, routerOptions).findActiveRoute()
     }
 
     /**
      * Updates the current active route and updates the browser pathname
-     * @param pathName
+     * @param pathName String
+     * @param language String
      **/
     function navigateTo(pathName, language = null) {
-      pathName = removeSlash$1(pathName, 'lead');
+      pathName = removeSlash$2(pathName, 'lead');
 
       if (language) {
         routerOptions.langConvertTo = language;
       }
-      const activeRoute = SpaRouter(userDefinedRoutes, 'http://fake.com/' + pathName, routerOptions).setActiveRoute();
 
-      return activeRoute
+      return SpaRouter(userDefinedRoutes, 'http://fake.com/' + pathName, routerOptions).setActiveRoute()
     }
 
     /**
      * Returns true if pathName is current active route
-     * @param pathName
+     * @param pathName String The path name to check against the current route.
+     * @param includePath Boolean if true checks that pathName is included in current route. If false should match it.
      **/
     function routeIsActive(queryPath, includePath = false) {
-      if (queryPath[0] !== '/') {
-        queryPath = '/' + queryPath;
-      }
-
-      // remove query params for comparison
-      let pathName = UrlParser$2(`http://fake.com${queryPath}`).pathname;
-      let activeRoute = currentActiveRoute;
-      let activeRoutePath = UrlParser$2(`http://fake.com${activeRoute}`).pathname;
-
-      pathName = removeSlash$1(pathName, 'trail');
-
-      activeRoutePath = removeSlash$1(activeRoutePath, 'trail');
-
-      if (includePath) {
-        return activeRoutePath.includes(pathName)
-      } else {
-        return activeRoutePath === pathName
-      }
+      return routerCurrent.isActive(queryPath, includePath)
     }
 
     if (typeof window !== 'undefined') {
       // Avoid full page reload on local routes
-      window.addEventListener('click', event => {
+      window.addEventListener('click', (event) => {
         if (event.target.pathname && event.target.hostname === window.location.hostname && event.target.localName === 'a') {
           event.preventDefault();
-          // event.stopPropagation()
-          navigateTo(event.target.pathname + event.target.search);
+          let navigatePathname = event.target.pathname + event.target.search;
+          if (event.target.hash) {
+            navigatePathname += event.target.hash;
+          }
+          const destinationUrl = event.target.pathname + event.target.search;
+          if (event.target.target === '_blank') {
+            window.open(destinationUrl, 'newTab');
+          } else {
+            navigateTo(destinationUrl);
+          }
         }
       });
 
-      window.onpopstate = function(_event) {
-        navigateTo(window.location.pathname + window.location.search);
+      window.onpopstate = function (_event) {
+        const navigatePathname = window.location.pathname + window.location.search;
+        if (window.location.hash) {
+          navigatePathname += window.location.hash;
+        }
+        navigateTo(navigatePathname);
       };
     }
 
-    var router$1 = { SpaRouter, localisedRoute, navigateTo, routeIsActive };
-    var router_1 = router$1.SpaRouter;
-    var router_2 = router$1.localisedRoute;
-    var router_3 = router$1.navigateTo;
-    var router_4 = router$1.routeIsActive;
+    var spa_router = { SpaRouter, localisedRoute, navigateTo, routeIsActive };
 
-    /* node_modules/svelte-router-spa/src/components/route.svelte generated by Svelte v3.17.1 */
+    /* node_modules/svelte-router-spa/src/components/route.svelte generated by Svelte v3.24.1 */
 
     // (10:34) 
     function create_if_block_2(ctx) {
+    	let route;
     	let current;
 
-    	const route = new Route({
+    	route = new Route({
     			props: {
     				currentRoute: /*currentRoute*/ ctx[0].childRoute,
     				params: /*params*/ ctx[1]
@@ -1544,6 +1840,7 @@ var app = (function () {
 
     // (8:33) 
     function create_if_block_1(ctx) {
+    	let switch_instance;
     	let switch_instance_anchor;
     	let current;
     	var switch_value = /*currentRoute*/ ctx[0].component;
@@ -1562,7 +1859,7 @@ var app = (function () {
     	}
 
     	if (switch_value) {
-    		var switch_instance = new switch_value(switch_props(ctx));
+    		switch_instance = new switch_value(switch_props(ctx));
     	}
 
     	const block = {
@@ -1640,6 +1937,7 @@ var app = (function () {
 
     // (6:0) {#if currentRoute.layout}
     function create_if_block(ctx) {
+    	let switch_instance;
     	let switch_instance_anchor;
     	let current;
     	var switch_value = /*currentRoute*/ ctx[0].layout;
@@ -1655,7 +1953,7 @@ var app = (function () {
     	}
 
     	if (switch_value) {
-    		var switch_instance = new switch_value(switch_props(ctx));
+    		switch_instance = new switch_value(switch_props(ctx));
     	}
 
     	const block = {
@@ -1833,19 +2131,24 @@ var app = (function () {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Route> was created with unknown prop '${key}'`);
     	});
 
-    	$$self.$set = $$props => {
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("Route", $$slots, []);
+
+    	$$self.$$set = $$props => {
     		if ("currentRoute" in $$props) $$invalidate(0, currentRoute = $$props.currentRoute);
     		if ("params" in $$props) $$invalidate(1, params = $$props.params);
     	};
 
-    	$$self.$capture_state = () => {
-    		return { currentRoute, params };
-    	};
+    	$$self.$capture_state = () => ({ currentRoute, params });
 
     	$$self.$inject_state = $$props => {
     		if ("currentRoute" in $$props) $$invalidate(0, currentRoute = $$props.currentRoute);
     		if ("params" in $$props) $$invalidate(1, params = $$props.params);
     	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
 
     	return [currentRoute, params];
     }
@@ -1880,17 +2183,18 @@ var app = (function () {
     	}
     }
 
-    var route = /*#__PURE__*/Object.freeze({
+    var route$1 = /*#__PURE__*/Object.freeze({
         __proto__: null,
         'default': Route
     });
 
-    /* node_modules/svelte-router-spa/src/components/router.svelte generated by Svelte v3.17.1 */
+    /* node_modules/svelte-router-spa/src/components/router.svelte generated by Svelte v3.24.1 */
 
     function create_fragment$1(ctx) {
+    	let route;
     	let current;
 
-    	const route = new Route({
+    	route = new Route({
     			props: { currentRoute: /*$activeRoute*/ ctx[0] },
     			$$inline: true
     		});
@@ -1938,13 +2242,13 @@ var app = (function () {
 
     function instance$1($$self, $$props, $$invalidate) {
     	let $activeRoute;
-    	validate_store(store_1, "activeRoute");
-    	component_subscribe($$self, store_1, $$value => $$invalidate(0, $activeRoute = $$value));
+    	validate_store(store$1.activeRoute, "activeRoute");
+    	component_subscribe($$self, store$1.activeRoute, $$value => $$invalidate(0, $activeRoute = $$value));
     	let { routes = [] } = $$props;
     	let { options = {} } = $$props;
 
     	onMount(function () {
-    		router_1(routes, document.location.href, options).setActiveRoute();
+    		spa_router.SpaRouter(routes, document.location.href, options).setActiveRoute();
     	});
 
     	const writable_props = ["routes", "options"];
@@ -1953,20 +2257,32 @@ var app = (function () {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Router> was created with unknown prop '${key}'`);
     	});
 
-    	$$self.$set = $$props => {
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("Router", $$slots, []);
+
+    	$$self.$$set = $$props => {
     		if ("routes" in $$props) $$invalidate(1, routes = $$props.routes);
     		if ("options" in $$props) $$invalidate(2, options = $$props.options);
     	};
 
-    	$$self.$capture_state = () => {
-    		return { routes, options, $activeRoute };
-    	};
+    	$$self.$capture_state = () => ({
+    		onMount,
+    		SpaRouter: spa_router.SpaRouter,
+    		Route,
+    		activeRoute: store$1.activeRoute,
+    		routes,
+    		options,
+    		$activeRoute
+    	});
 
     	$$self.$inject_state = $$props => {
     		if ("routes" in $$props) $$invalidate(1, routes = $$props.routes);
     		if ("options" in $$props) $$invalidate(2, options = $$props.options);
-    		if ("$activeRoute" in $$props) store_1.set($activeRoute = $$props.$activeRoute);
     	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
 
     	return [$activeRoute, routes, options];
     }
@@ -2001,17 +2317,18 @@ var app = (function () {
     	}
     }
 
-    var router$2 = /*#__PURE__*/Object.freeze({
+    var router$1 = /*#__PURE__*/Object.freeze({
         __proto__: null,
         'default': Router
     });
 
-    /* node_modules/svelte-router-spa/src/components/navigate.svelte generated by Svelte v3.17.1 */
+    /* node_modules/svelte-router-spa/src/components/navigate.svelte generated by Svelte v3.24.1 */
     const file = "node_modules/svelte-router-spa/src/components/navigate.svelte";
 
     function create_fragment$2(ctx) {
     	let a;
     	let current;
+    	let mounted;
     	let dispose;
     	const default_slot_template = /*$$slots*/ ctx[6].default;
     	const default_slot = create_slot(default_slot_template, ctx, /*$$scope*/ ctx[5], null);
@@ -2023,8 +2340,8 @@ var app = (function () {
     			attr_dev(a, "href", /*to*/ ctx[0]);
     			attr_dev(a, "title", /*title*/ ctx[1]);
     			attr_dev(a, "class", /*styles*/ ctx[2]);
-    			toggle_class(a, "active", router_4(/*to*/ ctx[0]));
-    			add_location(a, file, 24, 0, 478);
+    			toggle_class(a, "active", spa_router.routeIsActive(/*to*/ ctx[0]));
+    			add_location(a, file, 24, 0, 482);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -2037,11 +2354,17 @@ var app = (function () {
     			}
 
     			current = true;
-    			dispose = listen_dev(a, "click", /*navigate*/ ctx[3], false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(a, "click", /*navigate*/ ctx[3], false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, [dirty]) {
-    			if (default_slot && default_slot.p && dirty & /*$$scope*/ 32) {
-    				default_slot.p(get_slot_context(default_slot_template, ctx, /*$$scope*/ ctx[5], null), get_slot_changes(default_slot_template, /*$$scope*/ ctx[5], dirty, null));
+    			if (default_slot) {
+    				if (default_slot.p && dirty & /*$$scope*/ 32) {
+    					update_slot(default_slot, default_slot_template, ctx, /*$$scope*/ ctx[5], dirty, null, null);
+    				}
     			}
 
     			if (!current || dirty & /*to*/ 1) {
@@ -2057,7 +2380,7 @@ var app = (function () {
     			}
 
     			if (dirty & /*styles, routeIsActive, to*/ 5) {
-    				toggle_class(a, "active", router_4(/*to*/ ctx[0]));
+    				toggle_class(a, "active", spa_router.routeIsActive(/*to*/ ctx[0]));
     			}
     		},
     		i: function intro(local) {
@@ -2072,6 +2395,7 @@ var app = (function () {
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(a);
     			if (default_slot) default_slot.d(detaching);
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -2095,7 +2419,7 @@ var app = (function () {
 
     	onMount(function () {
     		if (lang) {
-    			const route = router_2(to, lang);
+    			const route = spa_router.localisedRoute(to, lang);
 
     			if (route) {
     				$$invalidate(0, to = route.path);
@@ -2106,7 +2430,7 @@ var app = (function () {
     	function navigate(event) {
     		event.preventDefault();
     		event.stopPropagation();
-    		router_3(to);
+    		spa_router.navigateTo(to);
     	}
 
     	const writable_props = ["to", "title", "styles", "lang"];
@@ -2116,8 +2440,9 @@ var app = (function () {
     	});
 
     	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("Navigate", $$slots, ['default']);
 
-    	$$self.$set = $$props => {
+    	$$self.$$set = $$props => {
     		if ("to" in $$props) $$invalidate(0, to = $$props.to);
     		if ("title" in $$props) $$invalidate(1, title = $$props.title);
     		if ("styles" in $$props) $$invalidate(2, styles = $$props.styles);
@@ -2125,9 +2450,17 @@ var app = (function () {
     		if ("$$scope" in $$props) $$invalidate(5, $$scope = $$props.$$scope);
     	};
 
-    	$$self.$capture_state = () => {
-    		return { to, title, styles, lang };
-    	};
+    	$$self.$capture_state = () => ({
+    		onMount,
+    		localisedRoute: spa_router.localisedRoute,
+    		navigateTo: spa_router.navigateTo,
+    		routeIsActive: spa_router.routeIsActive,
+    		to,
+    		title,
+    		styles,
+    		lang,
+    		navigate
+    	});
 
     	$$self.$inject_state = $$props => {
     		if ("to" in $$props) $$invalidate(0, to = $$props.to);
@@ -2135,6 +2468,10 @@ var app = (function () {
     		if ("styles" in $$props) $$invalidate(2, styles = $$props.styles);
     		if ("lang" in $$props) $$invalidate(4, lang = $$props.lang);
     	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
 
     	return [to, title, styles, navigate, lang, $$scope, $$slots];
     }
@@ -2190,16 +2527,13 @@ var app = (function () {
         'default': Navigate
     });
 
-    var Route$1 = getCjsExportFromNamespace(route);
+    var Route$1 = getCjsExportFromNamespace(route$1);
 
-    var Router$1 = getCjsExportFromNamespace(router$2);
+    var Router$1 = getCjsExportFromNamespace(router$1);
 
     var Navigate$1 = getCjsExportFromNamespace(navigate);
 
-    const SpaRouter$1 = router$1.SpaRouter;
-    const navigateTo$1 = router$1.navigateTo;
-    const localisedRoute$1 = router$1.localisedRoute;
-    const routeIsActive$1 = router$1.routeIsActive;
+    const { SpaRouter: SpaRouter$1, navigateTo: navigateTo$1, localisedRoute: localisedRoute$1, routeIsActive: routeIsActive$1 } = spa_router;
 
 
 
@@ -2213,11 +2547,8 @@ var app = (function () {
       Router: Router$1,
       Navigate: Navigate$1
     };
-    var src_5 = src.Route;
-    var src_6 = src.Router;
-    var src_7 = src.Navigate;
 
-    /* src/components/Header.svelte generated by Svelte v3.17.1 */
+    /* src/components/Header.svelte generated by Svelte v3.24.1 */
     const file$1 = "src/components/Header.svelte";
 
     function create_fragment$3(ctx) {
@@ -2322,18 +2653,23 @@ var app = (function () {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Header> was created with unknown prop '${key}'`);
     	});
 
-    	$$self.$set = $$props => {
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("Header", $$slots, []);
+
+    	$$self.$$set = $$props => {
     		if ("currentRoute" in $$props) $$invalidate(0, currentRoute = $$props.currentRoute);
     	};
 
-    	$$self.$capture_state = () => {
-    		return { currentRoute, isActive };
-    	};
+    	$$self.$capture_state = () => ({ routes, currentRoute, isActive });
 
     	$$self.$inject_state = $$props => {
     		if ("currentRoute" in $$props) $$invalidate(0, currentRoute = $$props.currentRoute);
     		if ("isActive" in $$props) isActive = $$props.isActive;
     	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
 
     	$$self.$$.update = () => {
     		if ($$self.$$.dirty & /*currentRoute*/ 1) {
@@ -2372,15 +2708,17 @@ var app = (function () {
     	}
     }
 
-    /* src/layouts/PublicLayout.svelte generated by Svelte v3.17.1 */
+    /* src/layouts/PublicLayout.svelte generated by Svelte v3.24.1 */
     const file$2 = "src/layouts/PublicLayout.svelte";
 
     function create_fragment$4(ctx) {
     	let div;
+    	let header;
     	let t;
+    	let route;
     	let current;
 
-    	const header = new Header({
+    	header = new Header({
     			props: {
     				currentRoute: /*currentRoute*/ ctx[0],
     				params: /*params*/ ctx[1]
@@ -2388,7 +2726,7 @@ var app = (function () {
     			$$inline: true
     		});
 
-    	const route = new src_5({
+    	route = new src.Route({
     			props: {
     				currentRoute: /*currentRoute*/ ctx[0],
     				params: /*params*/ ctx[1]
@@ -2461,17 +2799,22 @@ var app = (function () {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<PublicLayout> was created with unknown prop '${key}'`);
     	});
 
-    	$$self.$set = $$props => {
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("PublicLayout", $$slots, []);
+
+    	$$self.$$set = $$props => {
     		if ("currentRoute" in $$props) $$invalidate(0, currentRoute = $$props.currentRoute);
     	};
 
-    	$$self.$capture_state = () => {
-    		return { currentRoute };
-    	};
+    	$$self.$capture_state = () => ({ Route: src.Route, Header, currentRoute, params });
 
     	$$self.$inject_state = $$props => {
     		if ("currentRoute" in $$props) $$invalidate(0, currentRoute = $$props.currentRoute);
     	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
 
     	return [currentRoute, params];
     }
@@ -2489,7 +2832,7 @@ var app = (function () {
     		});
 
     		const { ctx } = this.$$;
-    		const props = options.props || ({});
+    		const props = options.props || {};
 
     		if (/*currentRoute*/ ctx[0] === undefined && !("currentRoute" in props)) {
     			console.warn("<PublicLayout> was created without expected prop 'currentRoute'");
@@ -2505,10 +2848,10 @@ var app = (function () {
     	}
     }
 
-    /* src/pages/Index.svelte generated by Svelte v3.17.1 */
+    /* src/pages/Index.svelte generated by Svelte v3.24.1 */
     const file$3 = "src/pages/Index.svelte";
 
-    // (25:4) <Navigate to="/about">
+    // (24:4) <Navigate to="/about">
     function create_default_slot(ctx) {
     	let img;
     	let img_src_value;
@@ -2517,9 +2860,9 @@ var app = (function () {
     		c: function create() {
     			img = element("img");
     			attr_dev(img, "alt", "Borat");
-    			if (img.src !== (img_src_value = "assets/images/great-success.png")) attr_dev(img, "src", img_src_value);
-    			attr_dev(img, "class", "svelte-11lhrhk");
-    			add_location(img, file$3, 25, 6, 411);
+    			if (img.src !== (img_src_value = "/build/assets/images/great-success.png")) attr_dev(img, "src", img_src_value);
+    			attr_dev(img, "class", "svelte-37s3zi");
+    			add_location(img, file$3, 24, 6, 366);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, img, anchor);
@@ -2533,7 +2876,7 @@ var app = (function () {
     		block,
     		id: create_default_slot.name,
     		type: "slot",
-    		source: "(25:4) <Navigate to=\\\"/about\\\">",
+    		source: "(24:4) <Navigate to=\\\"/about\\\">",
     		ctx
     	});
 
@@ -2545,11 +2888,12 @@ var app = (function () {
     	let h1;
     	let t1;
     	let figure;
+    	let navigate;
     	let t2;
     	let figcaption;
     	let current;
 
-    	const navigate = new src_7({
+    	navigate = new src.Navigate({
     			props: {
     				to: "/about",
     				$$slots: { default: [create_default_slot] },
@@ -2569,13 +2913,13 @@ var app = (function () {
     			t2 = space();
     			figcaption = element("figcaption");
     			figcaption.textContent = "HIGH FIVE!";
-    			attr_dev(h1, "class", "svelte-11lhrhk");
-    			add_location(h1, file$3, 22, 2, 329);
-    			attr_dev(figcaption, "class", "svelte-11lhrhk");
-    			add_location(figcaption, file$3, 27, 4, 487);
-    			attr_dev(figure, "class", "borat svelte-11lhrhk");
-    			add_location(figure, file$3, 23, 2, 355);
-    			add_location(main, file$3, 21, 0, 320);
+    			attr_dev(h1, "class", "svelte-37s3zi");
+    			add_location(h1, file$3, 21, 2, 284);
+    			attr_dev(figcaption, "class", "svelte-37s3zi");
+    			add_location(figcaption, file$3, 26, 4, 449);
+    			attr_dev(figure, "class", "borat svelte-37s3zi");
+    			add_location(figure, file$3, 22, 2, 310);
+    			add_location(main, file$3, 20, 0, 275);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -2625,10 +2969,23 @@ var app = (function () {
     	return block;
     }
 
+    function instance$5($$self, $$props, $$invalidate) {
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Index> was created with unknown prop '${key}'`);
+    	});
+
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("Index", $$slots, []);
+    	$$self.$capture_state = () => ({ Navigate: src.Navigate });
+    	return [];
+    }
+
     class Index extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, null, create_fragment$5, safe_not_equal, {});
+    		init(this, options, instance$5, create_fragment$5, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
@@ -2639,7 +2996,7 @@ var app = (function () {
     	}
     }
 
-    /* src/pages/About.svelte generated by Svelte v3.17.1 */
+    /* src/pages/About.svelte generated by Svelte v3.24.1 */
 
     const file$4 = "src/pages/About.svelte";
 
@@ -2689,10 +3046,22 @@ var app = (function () {
     	return block;
     }
 
+    function instance$6($$self, $$props) {
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<About> was created with unknown prop '${key}'`);
+    	});
+
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("About", $$slots, []);
+    	return [];
+    }
+
     class About extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, null, create_fragment$6, safe_not_equal, {});
+    		init(this, options, instance$6, create_fragment$6, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
@@ -2703,7 +3072,7 @@ var app = (function () {
     	}
     }
 
-    /* src/components/Search.svelte generated by Svelte v3.17.1 */
+    /* src/components/Search.svelte generated by Svelte v3.24.1 */
     const file$5 = "src/components/Search.svelte";
 
     function create_fragment$7(ctx) {
@@ -2713,6 +3082,7 @@ var app = (function () {
     	let input;
     	let t2;
     	let i;
+    	let mounted;
     	let dispose;
 
     	const block = {
@@ -2747,13 +3117,18 @@ var app = (function () {
     			append_dev(section, input);
     			append_dev(section, t2);
     			append_dev(section, i);
-    			dispose = listen_dev(input, "keyup", /*keyup_handler*/ ctx[3], false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(input, "keyup", /*keyup_handler*/ ctx[2], false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: noop,
     		i: noop,
     		o: noop,
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(section);
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -2769,7 +3144,7 @@ var app = (function () {
     	return block;
     }
 
-    function instance$5($$self, $$props, $$invalidate) {
+    function instance$7($$self, $$props, $$invalidate) {
     	const dispatch = createEventDispatcher();
     	const title = "Search Your Team";
 
@@ -2777,23 +3152,30 @@ var app = (function () {
     		dispatch("filterUser", value);
     	};
 
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Search> was created with unknown prop '${key}'`);
+    	});
+
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("Search", $$slots, []);
     	const keyup_handler = ({ target: { value } }) => filterUser(value);
 
-    	$$self.$capture_state = () => {
-    		return {};
-    	};
+    	$$self.$capture_state = () => ({
+    		createEventDispatcher,
+    		dispatch,
+    		title,
+    		filterUser
+    	});
 
-    	$$self.$inject_state = $$props => {
-    		
-    	};
-
-    	return [title, filterUser, dispatch, keyup_handler];
+    	return [title, filterUser, keyup_handler];
     }
 
     class Search extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$5, create_fragment$7, safe_not_equal, { title: 0 });
+    		init(this, options, instance$7, create_fragment$7, safe_not_equal, { title: 0 });
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
@@ -2832,7 +3214,7 @@ var app = (function () {
         };
     }
 
-    /* src/components/UsersCards.svelte generated by Svelte v3.17.1 */
+    /* src/components/UsersCards.svelte generated by Svelte v3.24.1 */
     const file$6 = "src/components/UsersCards.svelte";
 
     function get_each_context(ctx, list, i) {
@@ -3063,6 +3445,7 @@ var app = (function () {
     	let div0;
     	let current;
     	let each_value = /*users*/ ctx[0];
+    	validate_each_argument(each_value);
     	let each_blocks = [];
 
     	for (let i = 0; i < each_value.length; i += 1) {
@@ -3117,6 +3500,7 @@ var app = (function () {
     		p: function update(ctx, [dirty]) {
     			if (dirty & /*users*/ 1) {
     				each_value = /*users*/ ctx[0];
+    				validate_each_argument(each_value);
     				let i;
 
     				for (i = 0; i < each_value.length; i += 1) {
@@ -3140,17 +3524,17 @@ var app = (function () {
     				}
 
     				check_outros();
-    			}
 
-    			if (each_value.length) {
-    				if (each_1_else) {
-    					each_1_else.d(1);
-    					each_1_else = null;
+    				if (each_value.length) {
+    					if (each_1_else) {
+    						each_1_else.d(1);
+    						each_1_else = null;
+    					}
+    				} else if (!each_1_else) {
+    					each_1_else = create_else_block(ctx);
+    					each_1_else.c();
+    					each_1_else.m(div0, null);
     				}
-    			} else if (!each_1_else) {
-    				each_1_else = create_else_block(ctx);
-    				each_1_else.c();
-    				each_1_else.m(div0, null);
     			}
     		},
     		i: function intro(local) {
@@ -3189,7 +3573,7 @@ var app = (function () {
     	return block;
     }
 
-    function instance$6($$self, $$props, $$invalidate) {
+    function instance$8($$self, $$props, $$invalidate) {
     	let { users } = $$props;
     	let visible = false;
     	const writable_props = ["users"];
@@ -3198,18 +3582,23 @@ var app = (function () {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<UsersCards> was created with unknown prop '${key}'`);
     	});
 
-    	$$self.$set = $$props => {
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("UsersCards", $$slots, []);
+
+    	$$self.$$set = $$props => {
     		if ("users" in $$props) $$invalidate(0, users = $$props.users);
     	};
 
-    	$$self.$capture_state = () => {
-    		return { users, visible };
-    	};
+    	$$self.$capture_state = () => ({ fly, users, visible });
 
     	$$self.$inject_state = $$props => {
     		if ("users" in $$props) $$invalidate(0, users = $$props.users);
     		if ("visible" in $$props) visible = $$props.visible;
     	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
 
     	return [users];
     }
@@ -3217,7 +3606,7 @@ var app = (function () {
     class UsersCards extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$6, create_fragment$8, safe_not_equal, { users: 0 });
+    		init(this, options, instance$8, create_fragment$8, safe_not_equal, { users: 0 });
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
@@ -3227,7 +3616,7 @@ var app = (function () {
     		});
 
     		const { ctx } = this.$$;
-    		const props = options.props || ({});
+    		const props = options.props || {};
 
     		if (/*users*/ ctx[0] === undefined && !("users" in props)) {
     			console.warn("<UsersCards> was created without expected prop 'users'");
@@ -3243,20 +3632,22 @@ var app = (function () {
     	}
     }
 
-    /* src/pages/Users.svelte generated by Svelte v3.17.1 */
+    /* src/pages/Users.svelte generated by Svelte v3.24.1 */
 
     function create_fragment$9(ctx) {
+    	let search;
     	let t;
+    	let userscards;
     	let current;
 
-    	const search = new Search({
+    	search = new Search({
     			props: { data: /*usersList*/ ctx[0] },
     			$$inline: true
     		});
 
     	search.$on("filterUser", /*filterUserHandler*/ ctx[1]);
 
-    	const userscards = new UsersCards({
+    	userscards = new UsersCards({
     			props: { users: /*usersList*/ ctx[0] },
     			$$inline: true
     		});
@@ -3313,7 +3704,7 @@ var app = (function () {
     	return block;
     }
 
-    function instance$7($$self, $$props, $$invalidate) {
+    function instance$9($$self, $$props, $$invalidate) {
     	let users = [];
     	let usersList = [];
     	let value = "";
@@ -3334,9 +3725,24 @@ var app = (function () {
     		});
     	};
 
-    	$$self.$capture_state = () => {
-    		return {};
-    	};
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Users> was created with unknown prop '${key}'`);
+    	});
+
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("Users", $$slots, []);
+
+    	$$self.$capture_state = () => ({
+    		onMount,
+    		Search,
+    		UsersCards,
+    		users,
+    		usersList,
+    		value,
+    		filterUserHandler
+    	});
 
     	$$self.$inject_state = $$props => {
     		if ("users" in $$props) users = $$props.users;
@@ -3344,13 +3750,17 @@ var app = (function () {
     		if ("value" in $$props) value = $$props.value;
     	};
 
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
+
     	return [usersList, filterUserHandler];
     }
 
     class Users extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$7, create_fragment$9, safe_not_equal, {});
+    		init(this, options, instance$9, create_fragment$9, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
@@ -3379,11 +3789,12 @@ var app = (function () {
       }
     ];
 
-    /* src/App.svelte generated by Svelte v3.17.1 */
+    /* src/App.svelte generated by Svelte v3.24.1 */
 
     function create_fragment$a(ctx) {
+    	let router;
     	let current;
-    	const router = new src_6({ props: { routes }, $$inline: true });
+    	router = new src.Router({ props: { routes }, $$inline: true });
 
     	const block = {
     		c: function create() {
@@ -3422,10 +3833,23 @@ var app = (function () {
     	return block;
     }
 
+    function instance$a($$self, $$props, $$invalidate) {
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<App> was created with unknown prop '${key}'`);
+    	});
+
+    	let { $$slots = {}, $$scope } = $$props;
+    	validate_slots("App", $$slots, []);
+    	$$self.$capture_state = () => ({ Router: src.Router, routes });
+    	return [];
+    }
+
     class App extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, null, create_fragment$a, safe_not_equal, {});
+    		init(this, options, instance$a, create_fragment$a, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
