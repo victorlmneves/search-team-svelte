@@ -19,7 +19,7 @@
     "autoprefixer": "9.8.6",
     "node-sass": "4.14.1",
     "sirv-cli": "1.0.7",
-    "svelte-preprocess": "4.3.0",
+    "svelte-preprocess": "4.6.0",
     "svelte-router-spa": "5.7.3"
   }
 }
