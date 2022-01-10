@@ -1,6 +1,23 @@
-# cartrack-challenge-svelte
+<div align="center">
+  <h1>
+    Svelte Search Team
+  </h1>
+</div>
+<p align="center"> <a href="https://victorneves.dev" target="_blank"><img alt="" src="https://img.shields.io/badge/Website-EA4C89?style=normal&logo=dribbble&logoColor=white" style="vertical-align:center" /></a> <a href="@vitorneves" target="_blank"><img alt="" src="https://img.shields.io/badge/Twitter-1DA1F2?style=normal&logo=twitter&logoColor=white" style="vertical-align:center" /></a> <a href="https://www.linkedin.com/in/victorneves-frontend}" target="_blank"><img alt="" src="https://img.shields.io/badge/LinkedIn-0077B5?style=normal&logo=linkedin&logoColor=white" style="vertical-align:center" /></a> </p>
 
----
+# Description
+App that gets a list of users with a functionality to search/filter
+
+# Features
+An app that gets a list of users with functionality to search/filter build with Svelte
+
+# Screenshots
+ ![image](https://user-images.githubusercontent.com/17341789/148754264-e7e03b42-6a90-4f63-b63e-07b747302de8.png)
+
+# Tech Used
+ ![CSS3](https://img.shields.io/badge/css3-%231572B6.svg?style=for-the-badge&logo=css3&logoColor=white) ![HTML5](https://img.shields.io/badge/html5-%23E34F26.svg?style=for-the-badge&logo=html5&logoColor=white) ![JavaScript](https://img.shields.io/badge/javascript-%23323330.svg?style=for-the-badge&logo=javascript&logoColor=%23F7DF1E) ![Svelte](https://img.shields.io/badge/svelte-%23f1413d.svg?style=for-the-badge&logo=svelte&logoColor=white)
+
+## Details:
 
 *Looking for a shareable component template? Go here --> [sveltejs/component-template](https://github.com/sveltejs/component-template)*
 
@@ -106,3 +123,7 @@ Then, from within your project folder:
 npm run build
 surge public my-project.surge.sh
 ```
+
+      
+<!-- </> with 💛 by readMD (https://readmd.itsvg.in) -->
+    
